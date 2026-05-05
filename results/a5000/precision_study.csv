@@ -1,0 +1,3 @@
+precision,wall_time,mcups,steps,max_h_diff,mass_error_pct
+float32,0.2252,3082.82,3335,—,0.0
+float64,1.1355,611.49,3334,0.00022,0.0

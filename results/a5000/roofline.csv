@@ -1,0 +1,5 @@
+kernel_name,flops_per_cell,bytes_per_cell,AI,measured_gflops,measured_bw_gbs
+compute_k_grid,20,64,0.3125,17.293,55.337
+compute_wave_speeds,10,20,0.5,17.293,34.586
+compute_fluxes_global,60,88,0.6818,17.293,25.363
+update_state,25,48,0.5208,17.293,33.202

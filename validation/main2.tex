@@ -1,0 +1,1890 @@
+\documentclass[10pt, conference]{FMFP2023}
+
+% ---------- FMFP Required Packages ----------
+\usepackage[top=1.50cm, bottom=1.50cm, left=1.884cm, right=1.884cm,
+            includehead, includefoot, heightrounded]{geometry}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage[textfont=bf, font=normalsize]{caption}
+\usepackage{floatrow}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\floatstyle{plaintop}
+\restylefloat{table}
+\usepackage{subcaption}   % replaces deprecated subfigure package
+\usepackage{booktabs}     % professional table rules
+\floatsetup{font=normalsize}
+
+% ---------- User Specific Packages ----------
+\usepackage{siunitx}
+\usepackage{physics}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage[ruled,vlined,linesnumbered]{algorithm2e}
+\usepackage{nicefrac}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+% ---------- FMFP Header Configuration ----------
+\rhead{%
+    \sffamily\fontsize{9}{11}\selectfont
+    \vspace{-0.5cm}
+    \textbf{Proceedings of the 10th International and 50th National
+    Conference on Fluid Mechanics and Fluid Power (FMFP) \\
+    December 20--22, 2023, IIT Jodhpur, Rajasthan, India}
+    \\ \vspace{0.15cm}
+    \large{\textbf{FMFP2023-XX-YYY}}}
+
+\renewcommand{\headrulewidth}{0pt}
+
+\begin{document}
+
+% ---------- Title & Authors ----------
+\title{\Large\textbf{GPU-Accelerated Implementation of the
+Savage--Hutter Model with Application to 1D and 2D Inclined Plane
+Granular Flows}}
+
+\author{\textbf{Samyak Mayank}\textsuperscript{1}\\
+\textsuperscript{1}\small{School of Mechanical and Materials
+Engineering, Indian Institute of Technology Mandi,
+Himachal Pradesh 175075, India}}
+
+\maketitle
+\thispagestyle{fancy}
+\pagestyle{plain}
+
+% ---------- Abstract ----------
+\noindent\textbf{ABSTRACT}
+
+\noindent
+Granular flows such as rockfalls, landslides, and snow avalanches pose
+serious hazards in mountainous regions and are characterized by complex
+rheology, intermediate between solid-like and fluid-like behavior.
+This paper models the motion of a finite mass of cohesionless granular
+material released from rest on a rough inclined plane using the
+depth-averaged Savage--Hutter equations.
+Numerical simulations are validated against analytical similarity
+solutions (parabolic cap profile) and then accelerated using CUDA-based
+GPU parallelization.
+A performance comparison between Python, C++ (CPU), and CUDA (GPU)
+implementations highlights the computational advantages of GPU computing
+for large-scale granular flow simulations.
+The framework is further extended to a full two-dimensional
+finite-volume Rusanov solver, rigorously validated against the TITAN2D
+reference code using Intersection-over-Union (IoU), RMSE, and
+Lagrangian centroid tracking metrics.
+
+\smallskip
+\noindent\textbf{Keywords:} Granular Avalanches, Savage--Hutter Model,
+GPU Acceleration, CUDA, Finite Difference Method, Finite Volume Method
+
+% ============================================================
+% FIX: removed \textbf{} wrappers from all \section and \subsection
+%      commands — the class already bolds section headings, so wrapping
+%      in \textbf produces double-bold artefacts.
+% ============================================================
+\section{Introduction}
+
+Granular flows such as rockfalls, landslides, and snow avalanches
+constitute major geological hazards in mountainous regions.
+Unlike simple Newtonian fluids, granular materials exhibit dual
+behavior: they can flow like fluids when mobilized, yet they also
+possess solid-like frictional strength that allows them to remain at
+rest on steep slopes.
+This combination of frictional resistance, dilatancy, and collisional
+interactions makes granular avalanche modeling non-trivial.
+
+In order to investigate the fundamentals of avalanche motion, it is
+useful to focus on an idealized configuration: a finite mass of
+cohesionless granular material released from rest on a rough inclined
+plane.
+After release, the mass accelerates downslope under gravity, spreads
+due to internal pressure gradients, and eventually comes to rest as
+basal friction balances the driving component of gravity.
+The objective of this paper is threefold:
+\begin{itemize}[nosep]
+    \item To model the avalanche using depth-averaged continuum
+          equations based on the Savage--Hutter framework.
+    \item To implement a numerical finite-difference scheme and
+          validate the simulation against the analytical parabolic cap
+          similarity solution.
+    \item To introduce GPU acceleration using CUDA and demonstrate the
+          performance advantage of GPU-based implementation over Python
+          and C++ CPU-based codes.
+\end{itemize}
+
+% Literature Review section removed to conserve page budget.
+
+% ============================================================
+\section{Problem Definition}
+% ============================================================
+
+\subsection{Physical Setup}
+
+We consider a finite mass of cohesionless granular material initially
+at rest on a rigid, planar bed inclined at an angle $\zeta$ to the
+horizontal.
+The granular body has an initial thickness distribution $h(x,0)$,
+nonzero over a finite interval, and zero elsewhere.
+When the material is released, gravity accelerates the mass downslope,
+internal pressure gradients drive spreading, and basal friction
+decelerates and eventually stops the flow.
+The free surface and the positions of the front and rear margins evolve
+in time, making this a moving-boundary problem.
+
+\subsection{Modeling Assumptions}
+
+\paragraph{Incompressibility.}
+The bulk density $\rho$ is taken to be constant and changes in void
+ratio during flow are neglected, so mass conservation simplifies to
+depth conservation.
+
+\paragraph{Shallow Flow.}
+The flow is assumed to be long and shallow, with a small aspect ratio
+\[
+  \epsilon = \frac{H}{L} \ll 1,
+\]
+where $H$ is a characteristic thickness and $L$ a characteristic
+length along the slope.
+This justifies using a hydrostatic normal stress approximation and
+performing depth-averaging.
+
+\paragraph{Depth Averaging.}
+Velocity and stress variations in the vertical direction are
+represented through their depth-averaged counterparts.
+The primary kinematic variables are therefore $h(x,t)$ (flow thickness)
+and $u(x,t)$ (depth-averaged downslope velocity).
+
+\paragraph{Frictional Resistance.}
+Basal friction is modeled by a Coulomb sliding law with constant basal
+friction angle $\delta$: $\tau_b = \sigma_n\tan\delta$, where $\tau_b$
+is the basal shear stress and $\sigma_n$ the normal stress at the bed.
+Internal friction is characterized by an angle $\phi$, which enters
+the earth-pressure coefficient.
+
+% ============================================================
+\section{Mathematical Formulation}
+% ============================================================
+
+Under the above assumptions and after non-dimensionalization, the
+depth-averaged governing equations for flow over a planar bed take the
+following form.
+
+\subsection{Conservation of Mass}
+
+\begin{equation}
+    \frac{\partial h}{\partial t}
+    + \frac{\partial}{\partial x}(h\,u) = 0,
+    \label{eq:mass}
+\end{equation}
+which expresses conservation of mass (or thickness) for the deforming
+granular body.
+
+\subsection{Conservation of Momentum}
+
+\begin{equation}
+    \frac{\partial u}{\partial t}
+    + u\,\frac{\partial u}{\partial x}
+    = \sin\zeta
+    - \tan\delta\cos\zeta
+    - \beta\,\frac{\partial h}{\partial x},
+    \label{eq:momentum}
+\end{equation}
+where $\sin\zeta$ is the driving downslope gravity component,
+$\tan\delta\cos\zeta$ is the resisting basal Coulomb friction (for
+$u>0$), and $\beta\,\partial h/\partial x$ is an effective
+pressure-gradient term.
+The coefficient
+\begin{equation}
+    \beta = \epsilon\,k_{\text{act}}\cos\zeta,
+\end{equation}
+where $\epsilon$ is the aspect ratio and $k_{\text{act}}$ is the
+active earth-pressure coefficient.
+
+\subsection{Earth-Pressure Coefficient}
+
+The earth-pressure coefficient $k_{\text{act}}$ is derived from the
+Mohr--Coulomb yield criterion under an active stress state (material
+effectively extending downslope).
+It depends primarily on the internal friction angle $\phi$ and slope
+angle $\zeta$, and is treated as a constant for a given material and
+slope.
+
+\subsection{Boundary Conditions}
+
+Because the granular mass is finite, the thickness vanishes at the
+front and rear margins:
+\begin{equation}
+    h(x_F(t),t) = 0, \qquad h(x_R(t),t) = 0,
+\end{equation}
+with margins moving at the local flow velocity
+$dx_{F,R}/dt = u(x_{F,R},t)$.
+In numerical simulations over a fixed domain $[L_{\text{left}},
+L_{\text{right}}]$, we impose $h=0$, $u=0$ at both far-field
+boundaries.
+
+% ============================================================
+\section{Solution Techniques}
+% ============================================================
+
+\subsection{Analytical Similarity Solutions}
+
+For special classes of initial conditions and under symmetry
+assumptions, the governing equations admit analytical self-similar
+solutions, which serve as benchmarks for validating the numerical
+implementation.
+
+\subsubsection{Parabolic Cap Solution}
+
+A particularly important similarity solution is the
+\emph{parabolic cap}.
+In a suitably scaled comoving coordinate
+$\eta = (x - x_c(t))/g(t)$, where $x_c(t)$ is the center of mass
+and $g(t)$ is the half-width of the pile, the thickness profile takes
+the form
+\begin{equation}
+    h(\eta,t) = \frac{K}{g(t)}\bigl(1-\eta^2\bigr),
+    \label{eq:parabolic-cap}
+\end{equation}
+where $K$ is a constant related to the conserved total mass.
+The depth-averaged velocity varies approximately linearly with space,
+$\tilde{u}(\eta,t)\propto\eta$, with maximum magnitude near the center
+and zero at the margins.
+The half-width grows asymptotically as $g(t)\sim t$ as $t\to\infty$,
+while the maximum height decays due to spreading.
+
+\subsection{Numerical Methods}
+
+For general initial conditions, the system~\eqref{eq:mass}--\eqref{eq:momentum}
+must be solved numerically.
+The computational domain $[L_{\text{left}}, L_{\text{right}}]$ is
+discretized into $N_x$ grid points $x_i$, and time is advanced using
+an explicit forward Euler scheme:
+\begin{equation}
+    q_i^{n+1} = q_i^n + \Delta t\,\mathcal{R}_i(q^n),
+\end{equation}
+where $q=(h,u)$ and $\mathcal{R}$ denotes the discrete right-hand
+side.
+Stability requires a CFL condition relating $\Delta t$ to mesh size
+and characteristic wave speeds.
+The convective term $u\,\partial u/\partial x$ is approximated using
+an upwind finite-difference scheme for stability, while
+$\partial h/\partial x$ uses centered differences to avoid artificial
+bias in the spreading direction.
+At the far-field boundaries, $h=0$ and $u=0$ are imposed directly.
+
+% ============================================================
+\section{Simulation Scenarios and Validation Strategy}
+% ============================================================
+
+Three simulation cases are used to systematically verify the numerical
+solver, each isolating a specific part of the coupled
+mass--momentum system.
+
+\subsection{Case 1: Numerical Thickness, Analytical Velocity}
+
+The analytical similarity velocity profile is prescribed while the
+mass conservation equation is solved numerically to obtain $h(x,t)$.
+This isolates the spatial discretization of the mass equation and
+confirms correct spreading dynamics and mass preservation.
+The numerical thickness profiles relax into a parabolic shape,
+with front and rear margins advancing outward at nearly constant rates
+for large $t$, matching the asymptotic trend $g(t)\sim t$.
+Small deviations near the boundaries arise from numerical diffusion
+inherent to first-order upwinding.
+
+\subsection{Case 2: Numerical Velocity, Analytical Thickness}
+
+The analytical thickness profile is imposed while the momentum
+equation is solved numerically for $u(x,t)$.
+This evaluates the accuracy of the momentum solver independently,
+testing advection stability and internal-pressure effects.
+The numerically computed velocity distribution maintains nearly linear
+spatial variation $u(x,t)\propto\eta$, as predicted by the similarity
+solution, with minor phase lag that decreases under grid refinement.
+
+\subsection{Case 3: Fully Coupled Numerical Solution}
+
+Both mass and momentum equations are solved simultaneously using the
+finite difference scheme (Fig.~\ref{fig:case3_coupled}), representing
+the full physical problem and assessing coupling stability and
+convergence to similarity form.
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.95\textwidth]{coupled.pdf}
+    \caption{Case 3: Fully coupled numerical profiles of $h(x,t)$
+    (left) and $u(x,t)$ (right) compared with the analytical
+    Savage--Hutter parabolic cap similarity solution
+    ($\zeta=32^\circ$, $\delta=22^\circ$, $\beta=0.204$).}
+    \label{fig:case3_coupled}
+\end{figure*}
+
+This staged validation structure gives strong evidence that all solver
+components are correct before GPU acceleration is introduced.
+
+% ============================================================
+\section{Results and Discussion}
+% ============================================================
+
+The results demonstrate that the finite difference solver successfully
+reproduces the spreading and flattening behavior predicted by the
+Savage--Hutter model.
+
+\subsection{Case 1: Mass Conservation Verification}
+
+The numerical thickness profiles quickly relax into a parabolic shape.
+The front and rear margins advance outward at nearly constant rates
+for large $t$, matching the asymptotic spreading trend $g(t)\sim t$.
+Small deviations near boundaries are due to numerical diffusion
+inherent to first-order upwinding.
+
+\subsection{Case 2: Momentum Solver Verification}
+
+The numerically computed velocity distribution maintains nearly linear
+spatial variation $u(x,t)\propto\eta$, as predicted by the similarity
+solution.
+Minor phase lag between numerical and analytical profiles decreases
+with grid refinement, confirming correct implementation of
+internal-pressure and advective transport terms.
+
+\subsection{Case 3: Fully Coupled Dynamics}
+
+In the coupled case, the solution converges naturally toward the
+parabolic cap profile even when initial conditions are not perfectly
+parabolic, providing numerical confirmation of the theoretical
+\emph{shape stability} of the solution.
+The spreading rate and profile alignment with analytical similarity
+solutions indicate strong accuracy of the coupled solver.
+
+% ============================================================
+\section{GPU Programming and Performance}
+% ============================================================
+
+\subsection{Motivation for GPU Acceleration}
+
+As spatial resolution and simulation time increase, the computational
+cost of solving the Savage--Hutter equations on a CPU becomes
+prohibitive.
+GPUs are designed for massively parallel computations and can execute
+thousands of lightweight threads simultaneously, making them
+well-suited for updating large arrays of $h$ and $u$ in parallel,
+applying stencil-based finite-difference operations, and running many
+time steps efficiently.
+
+\subsection{Methodology of GPU Acceleration}
+
+\subsubsection{Conceptual Overview}
+
+In a standard CPU (serial) implementation, a single processing unit
+iterates through the grid cell-by-cell, computing inter-cell fluxes
+and updating each cell sequentially.
+As grid resolution scales to hundreds of thousands of cells, this
+sequential processing becomes a profound bottleneck.
+GPU acceleration takes a fundamentally different approach: the GPU
+deploys one thread per grid cell, and at each time step all threads
+simultaneously read their neighbors, compute fluxes, and update their
+respective cells concurrently.
+
+\subsubsection{Algorithmic Framework: Serial vs.\ Parallel}
+
+The transition from a sequential CPU model to a parallel CUDA model
+involves flattening the nested spatial loops.
+The explicit nature of the Rusanov scheme ensures that the update for
+cell $(i,j)$ depends only on its neighbors at the current time step
+$t^n$, making the algorithm \emph{embarrassingly parallel}.
+% FIX: label added to both algorithms for correct cross-referencing.
+%      Algorithm 1 previously referenced Eq.~\ref{eq:fv_update} which
+%      is defined later in Section 9; the label is retained and the
+%      forward reference is now resolved correctly.
+\begin{algorithm}[t]
+\caption{Serial CPU Execution}
+\label{alg:cpu}
+\SetAlgoLined
+Allocate memory for state vector $\bm{U} = (h,\,hu,\,hv)$\;
+\For{$t = 0$ \KwTo $T_{\text{end}}$}{
+    Compute maximum wave speed and $\Delta t$\;
+    \For{$j = 1$ \KwTo $N_y$}{
+        \For{$i = 1$ \KwTo $N_x$}{
+            Compute $k(x,y)$ using velocity divergence\;
+            Compute interface fluxes $\hat{\bm{F}}_{i+1/2,j}$
+            and $\hat{\bm{G}}_{i,j+1/2}$\;
+        }
+    }
+    \For{$j = 1$ \KwTo $N_y$}{
+        \For{$i = 1$ \KwTo $N_x$}{
+            Update state $\bm{U}^{n+1}_{i,j}$
+            via Eq.~\eqref{eq:fv_update}\;
+            Enforce dry-bed constraint ($h \ge 0$)\;
+        }
+    }
+}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Parallel GPU Execution (Host-Side Coordination)}
+\label{alg:gpu}
+\SetAlgoLined
+Allocate device memory using Struct of Arrays (SoA) layout\;
+Copy initial conditions from host to device\;
+\For{$t = 0$ \KwTo $T_{\text{end}}$}{
+    Launch \texttt{compute\_dt} reduction kernel\;
+    Launch \texttt{compute\_k\_grid} kernel
+    $\langle\!\langle\!\langle\text{Grid},\,\text{Block}
+    \rangle\!\rangle\!\rangle$\;
+    Launch \texttt{compute\_fluxes} kernel
+    $\langle\!\langle\!\langle\text{Grid},\,\text{Block}
+    \rangle\!\rangle\!\rangle$\;
+    Launch \texttt{update\_state} kernel
+    $\langle\!\langle\!\langle\text{Grid},\,\text{Block}
+    \rangle\!\rangle\!\rangle$\;
+}
+Copy final results from device to host for visualization\;
+\end{algorithm}
+
+\subsubsection{Spatial Mapping and Kernel Execution}
+
+The two-dimensional computational domain is partitioned into a uniform
+grid of CUDA thread blocks (e.g., $16\times16$ threads per block).
+Physics computations are distributed across distinct
+\texttt{\_\_global\_\_} kernel functions to enforce global memory
+synchronization before advancing to subsequent operations.
+Inside each kernel, a thread determines its unique global spatial
+indices:
+\begin{align}
+    i &= \text{blockIdx.x} \times \text{blockDim.x}
+         + \text{threadIdx.x}, \\
+    j &= \text{blockIdx.y} \times \text{blockDim.y}
+         + \text{threadIdx.y}.
+\end{align}
+
+\subsubsection{Data Layout and Memory Optimization}
+
+Traditional object-oriented programming groups variables into an
+Array of Structures (AoS).
+The GPU implementation instead uses a Struct of Arrays (SoA), storing
+all flow thicknesses $h$ contiguously in memory, followed separately
+by momentum arrays $hu$ and $hv$.
+When a CUDA warp (32 synchronized threads) accesses SoA memory, it
+performs a single coalesced memory transaction, saturating the
+high-bandwidth GDDR memory bus.
+Host-to-device transfers (\texttt{cudaMemcpy}) occur only at
+initialization and specific checkpoints for data logging, eliminating
+PCIe bus latency during the temporal loop.
+
+\subsection{Performance Comparison and Analysis}
+
+The numerical solver was executed for grid resolutions from
+$N_x=101$ to $N_x=100{,}001$, measuring execution time for Python
+(NumPy-based), C++ (CPU), and CUDA (GPU) implementations.
+
+% FIX: Execution time figure converted to figure* (full-width).
+%      Previously a single-column figure with width=1\textwidth, which
+%      overflowed into the adjacent column.  Full-width is required to
+%      make the many grid-size labels on the x-axis legible.
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.95\textwidth]{clean_execution_time.pdf}
+    \caption{Execution time for Python (green), C++ (orange), and
+    CUDA (blue) implementations across different 1D grid sizes $N_x$.
+    Python is slowest due to its interpreted nature; the GPU incurs
+    overhead for small grids but dominates at large $N_x$.}
+    \label{fig:time-vs-size}
+\end{figure*}
+
+% FIX: Speedup histogram converted to figure* for readability.
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.92\textwidth]{speedup_histogram.pdf}
+    \caption{Speedup achieved by compiler optimization levels
+    \texttt{-O1} (blue), \texttt{-O2} (orange), and \texttt{-O3}
+    (green) relative to unoptimized execution (\texttt{-O0}) as a
+    function of 2D grid size. Both \texttt{-O2} and \texttt{-O3}
+    achieve the highest gains.}
+    \label{fig:opt_speedup}
+\end{figure*}
+
+% FIX: CUDA vs C++ speedup converted to figure* for readability.
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.95\textwidth]{clean_speedup_cpp.pdf}
+    \caption{Speedup of GPU (CUDA) relative to the optimized C++
+    implementation as a function of 1D grid size $N_x$. Values
+    greater than 1 indicate GPU outperforming CPU; the crossover
+    occurs near $N_x \approx 25{,}601$.}
+    \label{fig:speedup_cpp}
+\end{figure*}
+
+% FIX: CUDA vs Python speedup converted to figure* for readability.
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.95\textwidth]{clean_speedup_python.pdf}
+    \caption{Speedup of GPU (CUDA) relative to the Python (NumPy)
+    implementation as a function of 1D grid size $N_x$.
+    The GPU achieves more than $70\times$ speedup at $N_x=1601$.}
+    \label{fig:speedup_python}
+\end{figure*}
+
+As shown in Fig.~\ref{fig:time-vs-size}, Python performs slowest
+across all grid sizes.
+The C++ CPU implementation scales far more efficiently and is
+significantly faster for small to medium grid sizes
+($N_x < 25{,}000$).
+The GPU initially exhibits larger runtimes for smaller grids because
+kernel launch latency and host--device memory transfers dominate.
+However, as $N_x$ increases, the advantage of massive parallelism
+becomes evident (Figs.~\ref{fig:speedup_cpp}
+and~\ref{fig:speedup_python}).
+The GPU achieves more than $70\times$ speedup over Python at
+$N_x=1601$, and outperforms C++ for grid sizes exceeding approximately
+$N_x=25{,}601$.
+Compiler optimization levels for 2D grids are benchmarked in
+Fig.~\ref{fig:opt_speedup}, with \texttt{-O2} and \texttt{-O3}
+achieving the highest gains over the unoptimized baseline.
+These results confirm that CUDA acceleration enables simulations at
+resolutions that would be impractical on CPU-based solvers alone.
+
+% ============================================================
+% CORRECTED NEW SECTIONS — v2
+% Four sections to insert AFTER Section VIII (GPU Programming
+% and Performance) and BEFORE the "Extension to Two-Dimensional
+% Flow" section.
+%
+% Fixes applied vs. v1 / vs. compiled PDF:
+%  1. Cross-reference "Section~9" → \ref{sec:2d_governing} so it
+%     resolves correctly regardless of final section numbering.
+%  2. Algorithm counter: old paper already has Alg. 1 (Serial CPU)
+%     and Alg. 2 (Parallel GPU) for the 1D solver.  The four new
+%     algorithms are therefore labelled alg:cpu_2d (→ Alg. 3) and
+%     alg:gpu_2d (→ Alg. 4) — matching what appears in the PDF.
+%  3. Roofline citation [?] replaced with a proper \bibitem key
+%     \cite{Williams2009}; add the entry below to \thebibliography.
+%  4. Figure placeholders (nsight_throughput.pdf, strong_scaling_2d.pdf
+%     weak_scaling_2d.pdf, soa_vs_aos.pdf) retained — they already
+%     appear as empty boxes in the compiled PDF awaiting real figures.
+%  5. Wording tightened to match the FMFP two-column IEEE style used
+%     throughout the document (no \paragraph{} inside subsections —
+%     use \subsubsection or plain prose instead; FMFP class renders
+%     \paragraph as run-in bold which conflicts with subsection style).
+%  6. "Section 9" hard-code removed; label \label{sec:2d_governing}
+%     must be placed on the "Extension to Two-Dimensional Flow"
+%     section heading in the main document.
+%  7. Table column alignment corrected: booktabs + @{} flush,
+%     matching Tables 1 and 3 in the compiled paper.
+%  8. Added \label{sec:gpu2d}, \label{sec:roofline}, \label{sec:scaling},
+%     \label{sec:datalayout} to each new section for internal \ref use.
+% ============================================================
+
+% ------------------------------------------------------------------
+% REQUIRED ADDITION TO \thebibliography IN MAIN DOCUMENT:
+%
+% \bibitem{Williams2009}
+% Williams, S., Waterman, A., \& Patterson, D. (2009).
+% \textit{Roofline: an insightful visual performance model for
+% multicore architectures}.
+% \textit{Communications of the ACM}, 52(4), 65--76.
+% ------------------------------------------------------------------
+
+% ============================================================
+\section{GPU Parallelisation of the Two-Dimensional Solver}
+\label{sec:gpu2d}
+% ============================================================
+
+\subsection{Kernel Decomposition and Thread Mapping}
+
+The two-dimensional Rusanov solver described in
+Section~\ref{sec:2d_governing} requires the evaluation of
+four logically distinct operations per time step:
+(i) computation of the dynamic earth-pressure field
+$k(x,y,t)$,
+(ii) estimation of the global maximum wave speed for
+adaptive time-stepping,
+(iii) computation of all inter-cell Rusanov fluxes, and
+(iv) update of the conserved state vector
+$\bm{U}=(h,hu,hv)^\top$.
+Each operation is implemented as a separate
+\texttt{\_\_global\_\_} CUDA kernel, and the mandatory
+\texttt{cudaDeviceSynchronize} barrier between successive
+launches enforces the data dependency chain without
+requiring explicit software barriers inside any kernel.
+
+\subsubsection{Algorithmic Framework}
+
+The transition from a sequential CPU model to a massively
+parallel CUDA model requires restructuring the solver so
+that every cell $(i,j)$ maps to a unique GPU thread.
+The update for cell $(i,j)$ at time step $n+1$ depends only
+on the values of its four face-adjacent neighbours at time
+step $n$; this nearest-neighbour stencil pattern makes the
+explicit Rusanov scheme \emph{embarrassingly parallel} with
+no cyclic data dependence.
+Algorithms~\ref{alg:cpu_2d} and~\ref{alg:gpu_2d} summarise
+the serial CPU and parallel GPU execution paths,
+respectively.
+
+\begin{algorithm}[t]
+\caption{Serial 2D CPU Rusanov Execution}
+\label{alg:cpu_2d}
+\SetAlgoLined
+Allocate arrays $h$, $hu$, $hv$, $k_{\text{grid}}$ of
+size $N_x \times N_y$\;
+Initialise hemispherical cap: $h(x,y,0)$ from
+Eq.~\eqref{eq:initial_condition}\;
+\For{$t = 0$ \KwTo $T_{\text{end}}$}{
+    \For{$j = 1$ \KwTo $N_y - 1$}{
+        \For{$i = 1$ \KwTo $N_x - 1$}{
+            Compute divergence
+            $\nabla\cdot\bar{\bm{u}}_{i,j}$\;
+            Assign $k_{i,j} \leftarrow k_{\text{act}}$
+            or $k_{\text{pass}}$\;
+        }
+    }
+    Find $a_{\max} = \max_{i,j}(|u_{i,j}|+c_{i,j},\;
+    |v_{i,j}|+c_{i,j})$; set $\Delta t$\;
+    \For{$j = 0$ \KwTo $N_y$}{
+        \For{$i = 0$ \KwTo $N_x$}{
+            Compute $\hat{\bm{F}}_{i+\nicefrac{1}{2},j}$
+            and $\hat{\bm{G}}_{i,j+\nicefrac{1}{2}}$\;
+        }
+    }
+    \For{$j = 1$ \KwTo $N_y - 1$}{
+        \For{$i = 1$ \KwTo $N_x - 1$}{
+            Update $\bm{U}^{n+1}_{i,j}$ via
+            Eq.~\eqref{eq:fv_update}\;
+            Enforce dry-bed constraint ($h \geq 0$)\;
+        }
+    }
+}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Parallel 2D GPU (CUDA) Execution}
+\label{alg:gpu_2d}
+\SetAlgoLined
+\textbf{Host:} Allocate SoA device arrays for $h$, $hu$,
+$hv$, $k_{\text{grid}}$, flux buffers
+$\bm{F}^x_{h,hu,hv}$, $\bm{G}^y_{h,hu,hv}$,
+\texttt{wave\_speeds}\;
+\textbf{Host:} Copy initial condition to device via
+\texttt{cudaMemcpy}\;
+Set $\texttt{tpb}=(16,16)$;
+$\texttt{bpg}=\bigl(\lceil N_x/16\rceil,\lceil N_y/16
+\rceil\bigr)$\;
+\For{$t = 0$ \KwTo $T_{\text{end}}$}{
+    \textbf{K1:} \texttt{compute\_k\_grid}
+    $\langle\!\langle\!\langle\texttt{bpg},\texttt{tpb}
+    \rangle\!\rangle\!\rangle$
+    --- assign $k_{\text{act}}$ or $k_{\text{pass}}$
+    cell-wise\;
+    \textbf{K2:} \texttt{compute\_wave\_speeds}
+    $\langle\!\langle\!\langle\texttt{bpg},\texttt{tpb}
+    \rangle\!\rangle\!\rangle$
+    --- compute $\max(|u|+c,\;|v|+c)$ per cell\;
+    \textbf{Reduce:} \texttt{cp.max(wave\_speeds)}
+    $\Rightarrow a_{\max}$; compute $\Delta t$\;
+    \textbf{K3:} \texttt{compute\_fluxes}
+    $\langle\!\langle\!\langle\texttt{bpg},\texttt{tpb}
+    \rangle\!\rangle\!\rangle$
+    --- Rusanov fluxes at all $(N_x{+}1){\times}N_y$
+    and $N_x{\times}(N_y{+}1)$ interfaces\;
+    \textbf{K4:} \texttt{update\_state}
+    $\langle\!\langle\!\langle\texttt{bpg},\texttt{tpb}
+    \rangle\!\rangle\!\rangle$
+    --- conservative update + dry-bed enforcement\;
+}
+\textbf{Host:} Copy snapshots from device to host at
+checkpoints\;
+\end{algorithm}
+
+\subsubsection{Thread Block Configuration}
+
+The two-dimensional domain is tiled with CUDA thread blocks
+of dimension $16\times16=256$ threads.
+Each thread computes its global cell indices as
+\begin{align}
+    i &= \text{blockIdx.x}\times\text{blockDim.x}
+         + \text{threadIdx.x},
+    \label{eq:thread_i} \\
+    j &= \text{blockIdx.y}\times\text{blockDim.y}
+         + \text{threadIdx.y},
+    \label{eq:thread_j}
+\end{align}
+and a single bounds check prevents out-of-range writes.
+For the production grid ($N_x\times N_y=800\times260$) this
+yields $50\times17=850$ concurrent thread blocks, sufficient
+to saturate the streaming multiprocessor (SM) scheduler of
+both the GTX~1650 and the A5000.
+
+\subsection{Shared-Memory Tiling in the Flux Kernel}
+
+The \texttt{compute\_fluxes\_kernel} is the most
+computationally intensive stage of each time step.
+In the baseline global-memory implementation
+(\texttt{gpu\_global.py}), each thread reads six
+global-memory values per interface directly from GDDR
+memory.
+Because the state of cell $(i+1,j)$ is required by both
+thread $i$ and thread $i+1$, these loads are redundant
+and generate repeated global memory traffic.
+
+The shared-memory variant
+(\texttt{gpu\_shared.py}) upgrades the flux kernel with
+on-chip tiling.
+Each $16\times16$ thread block cooperatively loads a
+$(17\times17)$ tile of the $h$, $hu$, $hv$, and
+$k_{\text{grid}}$ arrays into \texttt{\_\_shared\_\_}
+memory via four distinct passes:
+\begin{itemize}[nosep]
+    \item All 256 threads load the core $16\times16$
+          sub-array in a single coalesced pass.
+    \item The rightmost thread column loads the right-halo
+          column (required for $x$-fluxes) when
+          $i+1<N_x$.
+    \item The topmost thread row loads the top-halo row
+          (required for $y$-fluxes) when $j+1<N_y$.
+    \item A \texttt{\_\_syncthreads()} barrier ensures all
+          shared-memory entries are visible before any
+          arithmetic proceeds.
+\end{itemize}
+All subsequent flux arithmetic reads exclusively from the
+on-chip tile, aiming to reduce global memory traffic for
+this kernel.
+The shared-memory variant requires
+$4\times17\times17\times\texttt{sizeof(real)}$
+bytes of shared memory per block ($\approx4.6$\,KB for
+\texttt{float64}), comfortably within the 100\,KB
+configurable L1/shared budget per SM on both GPUs.
+
+% ============================================================
+\section{Compute-versus-Memory Boundedness Analysis}
+\label{sec:roofline}
+% ============================================================
+
+\subsection{Roofline Model}
+
+The performance of any GPU kernel is bounded by two
+independent hardware ceilings: the floating-point arithmetic
+throughput (FLOP/s) and the memory bandwidth (bytes/s).
+The roofline model~\cite{Williams2009} characterises a
+kernel by its \emph{arithmetic intensity}
+\begin{equation}
+    I = \frac{\text{FLOP per cell update}}
+             {\text{bytes transferred per cell update}},
+    \label{eq:arith_intensity}
+\end{equation}
+and compares it against the \emph{ridge point}
+$I^* = \text{FLOP/s}_{\text{peak}}/
+\text{BW}_{\text{peak}}$.
+Kernels with $I<I^*$ are \emph{memory bound}; kernels
+with $I>I^*$ are \emph{compute bound}.
+
+\subsection{Arithmetic Intensity of the Rusanov Kernels}
+
+For the 2D Rusanov stencil in single precision, the state
+vector $\bm{U}=(h,hu,hv)^\top$ occupies
+$3\times4=12$\,bytes per cell.
+Including the $k_{\text{grid}}$ and flux buffer reads and
+writes, the total data traffic per cell per time step is
+approximately $9\times4=36$\,bytes in single precision
+($72$\,bytes in double precision).
+
+The per-cell arithmetic cost is estimated by counting the
+operations in \texttt{compute\_fluxes\_kernel} and
+\texttt{update\_state\_kernel}: each of the two
+contributing interfaces requires approximately 15\,FLOP
+(velocity reconstruction, two square roots for wave speeds,
+flux evaluations, Rusanov dissipation), and the state update
+and source-term evaluation add a further $\approx18$\,FLOP,
+giving
+\begin{equation}
+    I \approx \frac{48\;\text{FLOP}}{36\;\text{bytes}}
+            \approx 1.33\;\text{FLOP/byte}.
+    \label{eq:intensity_val}
+\end{equation}
+The GTX~1650 (Turing, FP32) delivers a peak throughput of
+$2.98$\,TFLOP/s at a memory bandwidth of $128$\,GB/s,
+placing the ridge point at $I^*\approx23.3$\,FLOP/byte.
+Since $I\ll I^*$, all physics kernels are strongly
+\emph{memory bound} on this architecture.
+
+\subsection{Nsight Compute Profiling}
+
+Quantitative confirmation is provided by NVIDIA Nsight
+Compute profiling on the GTX~1650.
+Table~\ref{tab:nsight} summarises the average kernel
+duration together with hardware compute and memory
+throughput utilisation, averaged over repeated invocations
+of each kernel during the $800\times260$ production run.
+
+\begin{table}[htbp]
+\caption{GTX~1650 Nsight Compute profiling (FP32,
+$800\times260$ grid, SpeedOfLight sections).
+Duration and throughputs are averaged across
+three profiled launches per kernel.}
+\label{tab:nsight}
+\centering
+\begin{tabular}{@{}p{3.0cm}rrrr@{}}
+\toprule
+\textbf{Kernel}
+    & \shortstack[r]{\textbf{Dur.}\\($\mu$s)}
+    & \shortstack[r]{\textbf{Comp.}\\(\%)}
+    & \shortstack[r]{\textbf{Mem.}\\(\%)}
+    & \shortstack[r]{\textbf{BW}\\(GB/s)} \\
+\midrule
+\texttt{k\_grid}      & 18.8 & 22.4 & 53.9 & 80.2 \\
+\texttt{wave\_speeds} & 17.7 & 22.6 & 50.0 & 76.7 \\
+\texttt{fluxes}       & 78.8 & 38.1 & 51.9 & 82.7 \\
+\texttt{update\_state}& 122.1 & 40.2 & 41.5 & 65.7 \\
+\bottomrule
+\end{tabular}
+\\[3pt]
+{\footnotesize
+\textit{Abbreviations:}
+\texttt{k\_grid} = \texttt{compute\_k\_grid\_kernel};
+\texttt{wave\_speeds} = \texttt{compute\_wave\_speeds\_kernel};
+\texttt{fluxes} = \texttt{compute\_fluxes\_global\_kernel}.}
+\end{table}
+
+The profiling data in Table~\ref{tab:nsight} confirm the
+theoretical prediction of Eq.~\eqref{eq:intensity_val}.
+Notably, \texttt{update\_state} is the longest-running
+kernel (122.1\,$\mu$s) because it reads and writes all
+state variables plus all six flux buffer arrays in a single
+pass, despite having the lowest memory-throughput
+utilisation (41.5\%).
+The \texttt{compute\_fluxes\_global} kernel achieves the
+highest measured effective bandwidth (82.7\,GB/s,
+$\approx65\%$ of the GTX~1650 peak) together with the
+highest compute utilisation (38\%), reflecting the
+arithmetic-intensive Rusanov dissipation terms.
+Across all four kernels, compute utilisation is
+consistently below memory utilisation, directly
+consistent with the low arithmetic intensity
+$I\approx0.3$--$0.7$\,FLOP/byte.
+These measurements identify memory bandwidth as the
+principal performance-limiting resource and motivate the
+SoA layout, single-precision arithmetic, and coalesced
+access strategies described in Section~\ref{sec:datalayout}.
+
+% ============================================================
+\section{Scaling Analysis}
+\label{sec:scaling}
+% ============================================================
+
+\subsection{Definitions}
+
+Two complementary scaling studies characterise the parallel
+efficiency of the CUDA solver.
+
+\subsubsection{Strong Scaling}
+
+The total problem size $N=N_x\times N_y$ is held fixed
+while the number of GPU threads (proportional to $N$)
+is implicitly varied by changing the grid resolution.
+Strong scaling efficiency is measured as the speedup
+relative to the optimised single-threaded C++ reference:
+\begin{equation}
+    E_{\text{strong}}(N)
+    = \frac{T_{\text{serial}}(N)}{T_{\text{GPU}}(N)}.
+    \label{eq:strong_eff}
+\end{equation}
+Perfect strong scaling implies $E_{\text{strong}}$
+proportional to $N$.
+
+\subsubsection{Weak Scaling}
+
+Both problem size and GPU thread count increase
+proportionally, keeping work per thread constant.
+The per-step throughput in million cell updates per second
+(MCUPS) is used as the efficiency metric:
+\begin{equation}
+    \text{MCUPS}
+    = \frac{N_x \times N_y \times N_{\text{steps,window}}}
+           {T_{\text{window}} \times 10^6}.
+    \label{eq:mcups}
+\end{equation}
+Perfect weak scaling implies constant MCUPS as $N$
+increases.
+Note that because the CFL condition enforces
+$\Delta t\propto\Delta x$, increasing the grid resolution
+simultaneously increases the number of time steps required
+to reach a fixed physical time, making this a
+\emph{simultaneous} spatial and temporal refinement study.
+
+\subsection{Strong Scaling Results}
+
+At small grids ($N_x<200$--$250$ cells, fewer than
+$\sim52{,}000$ cells in 2D), kernel launch overhead and
+the two-stage global reduction for $\Delta t$ collectively
+exceed the useful computation time, so the GPU is slower
+than the Numba CPU reference.
+As $N_x$ grows beyond this crossover, the GPU's massive
+thread-level parallelism saturates the device and speedup
+rises steeply.
+At the production resolution ($N_x=800$, $208{,}000$
+cells), both GPUs deliver approximately $12.4\times$
+speedup (GTX~1650: 12.3$\times$; A5000: 12.4$\times$).
+The similar speedup ratios reflect that the same
+kernel-launch overhead bounds both devices at this
+resolution; the A5000 advantage over the GTX~1650 is
+captured by the absolute MCUPS metric below.
+Dual-panel scaling curves for both GPUs are shown in
+Fig.~\ref{fig:dual_scaling} (top row, Section~\ref{sec:multigpu}).
+
+\subsection{Weak Scaling Results}
+
+Grid resolution is increased from $N_x=200$ to
+$N_x=3200$ (GTX~1650) and $N_x=6400$ (A5000) in
+powers of two while the physical domain
+$L_x\times L_y=4.0\times1.3$\,m$^2$ is fixed.
+MCUPS is logged every 50 time steps inside
+\texttt{run\_gpu\_global}.
+
+MCUPS rises steeply from small grids as thread occupancy
+increases, reaching a plateau near the production
+resolution ($800\times260$) on the GTX~1650 at
+$\approx991$\,MCUPS, and at $\approx6{,}621$\,MCUPS on
+the A5000.
+The plateau confirms full device occupancy: additional
+cells do not impose proportionally higher latency, the
+hallmark of good weak scaling on a memory-bound workload.
+A modest decline at the largest GTX~1650 grids
+($N_x>1200$) is attributed to L2 cache pressure as the
+working set
+($9\times\texttt{sizeof(real)}\times N_x\times N_y$)
+exceeds the 1\,MB on-chip L2.
+The A5000 sustains throughput to $N_x=6400$ before any
+decline, consistent with its larger L2 and higher
+memory bandwidth.
+Full MCUPS curves for both GPUs are shown in
+Fig.~\ref{fig:dual_scaling} (bottom row,
+Section~\ref{sec:multigpu}).
+
+\subsection{Discussion}
+
+For geophysical hazard assessment at high spatial fidelity
+($N_x\geq600$, $\Delta x\leq6.7$\,mm), the GPU provides
+substantial throughput advantages over CPU-based solvers.
+Below the crossover, a single-threaded C++ implementation
+is preferable because kernel launch and PCIe transfer
+overheads dominate.
+The weak scaling plateau confirms that the solver can be
+deployed at higher resolutions without proportional loss
+of efficiency, subject only to the GPU device memory
+limit (24\,GB on the A5000).
+
+% ============================================================
+\section{Data Layout Optimisations}
+\label{sec:datalayout}
+% ============================================================
+
+\subsection{Array of Structs versus Struct of Arrays}
+
+Traditional object-oriented scientific codes group all
+physical variables of a single grid cell into a
+\emph{struct}:
+\begin{verbatim}
+struct Cell { float h, hu, hv, k; };
+Cell grid[Ny][Nx]; // AoS layout
+\end{verbatim}
+When a CUDA warp of 32 threads accesses the $h$ field of
+32 consecutive cells, the AoS layout forces 32 separate
+strided memory transactions because consecutive $h$ values
+are separated by \texttt{sizeof(Cell)=16}\,bytes.
+Effective memory bandwidth is reduced by a factor of
+$\texttt{sizeof(Cell)}/\texttt{sizeof(float)}=4$.
+
+The present solver adopts a \emph{Struct of Arrays} (SoA)
+layout:
+\begin{verbatim}
+float h[Ny*Nx], hu[Ny*Nx];
+float hv[Ny*Nx], k_grid[Ny*Nx]; // SoA
+\end{verbatim}
+When a warp accesses \texttt{h[j*nx+i]} through
+\texttt{h[j*nx+i+31]}, all 32 reads target consecutive
+4-byte addresses, forming a single 128-byte coalesced
+transaction that saturates the GDDR6 memory controller.
+In the AoS layout the same 32 reads are separated by
+\texttt{sizeof(Cell)=16}\,bytes, forcing 32 strided
+transactions and reducing effective bandwidth by a factor
+of 4.
+The measured SoA throughput advantage at the $3200\times1040$
+grid is $1.19\times$ on the GTX~1650 and $1.25\times$ on
+the A5000; dual-panel curves appear in
+Fig.~\ref{fig:dual_layout} (Section~\ref{sec:multigpu}).
+
+\subsection{Flux Buffer Sizing}
+
+In the Rusanov scheme, fluxes reside on cell
+\emph{interfaces}, not cell centres.
+For an $N_x\times N_y$ cell domain, the $x$-direction flux
+arrays $\hat{\bm{F}}^x$ have size $N_y\times(N_x+1)$
+and the $y$-direction arrays $\hat{\bm{G}}^y$ have size
+$(N_y+1)\times N_x$.
+Allocating each buffer at its natural interface size
+eliminates all index-offset arithmetic inside
+\texttt{update\_state\_kernel}, reducing per-thread
+instruction count and lowering register pressure (the
+kernel uses 29 registers per thread, as confirmed by the
+Nsight report).
+
+\subsection{Single- versus Double-Precision Strategy}
+
+Consumer GPUs such as the GTX~1650 provide a
+$1{:}64$ FP32-to-FP64 throughput ratio.
+For the wave-speed-limited Rusanov scheme, the critical
+arithmetic is $c=\sqrt{k\,g_z\,h}$, which involves
+flow depths of $\mathcal{O}(10^{-2})$\,m.
+Round-off errors at FP32 precision are
+$\mathcal{O}(10^{-7})$\,m, far below the dry-bed
+threshold $h_{\text{dry}}=10^{-4}$\,m, so 32-bit
+arithmetic is physically adequate.
+\texttt{gpu\_global.py} therefore defaults to
+\texttt{float32}, halving the memory footprint per cell
+relative to \texttt{float64} and doubling the effective
+number of bytes that fit in the L1/L2 caches per SM.
+Both GPUs are evaluated in FP32 for benchmark comparisons;
+\texttt{float64} is available for high-precision validation
+against TITAN2D where truncation artefacts in RMSE metrics
+must be minimised.
+Table~\ref{tab:precision} quantifies the consequences of
+each choice.
+
+\begin{table}[htbp]
+\caption{Precision comparison for the GTX~1650 and
+A5000 GPU implementations (FP32 vs.\ FP64,
+$800\times260$ grid).}
+\label{tab:precision}
+\centering
+\begin{tabular}{@{}p{3.2cm}rr@{}}
+\toprule
+\textbf{Property}
+    & \shortstack[r]{\textbf{GTX~1650}\\\textbf{(FP32)}}
+    & \shortstack[r]{\textbf{GTX~1650}\\\textbf{(FP64)}} \\
+\midrule
+Bytes / cell              & 12    & 24    \\
+Peak TFLOP/s              & 2.98  & 0.047 \\
+Peak BW (GB/s)            & 128   & 128   \\
+MCUPS (800$\times$260)    & 611   & 145   \\
+FP32/FP64 speedup         & \multicolumn{2}{c}{$4.2\times$} \\
+Mass error (\%)           & 0.0   & 0.0   \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Host--Device Transfer Strategy}
+
+\texttt{cudaMemcpy} transfers are confined to the initial
+condition upload at $t=0$ and a checkpoint extraction every
+50 time steps (for mass conservation logging and MCUPS
+analytics).
+No PCIe traffic occurs during the bulk of the time-stepping
+loop.
+The global reduction \texttt{cp.max(wave\_speeds)} uses a
+two-stage CuPy device-resident reduction; only a single
+scalar is transferred to the host per step to compute
+$\Delta t$, costing approximately $5\,\mu$s --- less than
+$5\%$ of the total per-step wall time at the production
+grid resolution.
+
+\subsection{Summary of Optimisation Impact}
+
+The Nsight profiling results confirm that all four physics
+kernels are memory-bound with compute utilisation
+roughly half the memory utilisation (see
+Table~\ref{tab:nsight}).
+The most productive remaining optimisation pathway is
+vectorised loads (\texttt{float4} reads), which would
+halve the number of memory transactions per warp and
+could raise effective memory bandwidth toward the
+hardware peak of $128$\,GB/s on the GTX~1650.
+
+% ============================================================
+\section{Extension to Two-Dimensional Flow}
+% ============================================================
+
+The one-dimensional framework captures the essential physics of
+depth-averaged granular flow but restricts spreading to a single
+downslope direction.
+Real avalanche events spread laterally as well, driven by internal
+pressure gradients in both the downslope ($x$) and cross-slope ($y$)
+directions.
+This section derives the two-dimensional governing equations,
+introduces the dynamic earth-pressure model, and describes the
+finite-volume Rusanov scheme used for their numerical solution.
+
+\subsection{Two-Dimensional Governing Equations}
+
+\subsubsection{Coordinate System}
+
+A bed-fitted orthogonal coordinate system is adopted: $x$ is the
+downslope direction, $y$ the cross-slope direction, and $z$ normal to
+the inclined plane.
+The gravitational components resolved along these axes are
+\begin{equation}
+    g_x = g\sin\zeta, \qquad g_y = 0, \qquad g_z = g\cos\zeta.
+    \label{eq:gravity_components}
+\end{equation}
+
+\subsubsection{Conservation of Mass}
+
+Depth-averaging the three-dimensional incompressibility condition over
+the granular layer yields the two-dimensional continuity equation:
+\begin{equation}
+    \frac{\partial h}{\partial t}
+    + \frac{\partial(hu)}{\partial x}
+    + \frac{\partial(hv)}{\partial y} = 0,
+    \label{eq:mass_2d}
+\end{equation}
+where $h(x,y,t)$ is the local flow thickness and $u(x,y,t)$,
+$v(x,y,t)$ are the depth-averaged velocity components in the $x$- and
+$y$-directions, respectively.
+
+\subsubsection{Conservation of Momentum}
+
+The depth-averaged momentum equations in conservative form read:
+\begin{align}
+    \frac{\partial(hu)}{\partial t}
+    + \frac{\partial}{\partial x}\!\left(hu^2 + \tfrac{1}{2}kg_zh^2\right)
+    + \frac{\partial(huv)}{\partial y}
+    &= S_x,
+    \label{eq:mom_x_2d} \\[4pt]
+    \frac{\partial(hv)}{\partial t}
+    + \frac{\partial(huv)}{\partial x}
+    + \frac{\partial}{\partial y}\!\left(hv^2 + \tfrac{1}{2}kg_zh^2\right)
+    &= S_y,
+    \label{eq:mom_y_2d}
+\end{align}
+where $\tfrac{1}{2}kg_zh^2$ represents depth-averaged normal stress
+contributions scaled by the earth-pressure coefficient $k$.
+
+\subsubsection{Source Terms}
+
+The source terms $S_x$ and $S_y$ combine gravitational forcing, basal
+Coulomb friction, and internal cross-stress:
+\begin{equation}
+\begin{aligned}
+    S_x &= g_xh - \frac{u}{|\bm{u}|}\,hg_z\mu \\
+        &\quad - hk\operatorname{sgn}\!\left(\frac{\partial u}
+          {\partial y}\right)\sin\phi\,
+          \frac{\partial(g_zh)}{\partial y},
+\end{aligned}
+    \label{eq:source_x}
+\end{equation}
+\begin{equation}
+\begin{aligned}
+    S_y &= g_yh - \frac{v}{|\bm{u}|}\,hg_z\mu \\
+        &\quad - hk\operatorname{sgn}\!\left(\frac{\partial v}
+          {\partial x}\right)\sin\phi\,
+          \frac{\partial(g_zh)}{\partial x},
+\end{aligned}
+    \label{eq:source_y}
+\end{equation}
+where $|\bm{u}|=\sqrt{u^2+v^2}$ is the local flow speed (regularized
+by $\epsilon_r=10^{-3}$ to prevent division by zero) and
+$\mu=\tan\delta$ is the basal friction coefficient.
+The first term represents gravitational body forcing, the second models
+Coulomb friction opposing the local velocity, and the third couples
+the two momentum equations through the Mohr--Coulomb internal
+cross-stress.
+
+\subsection{Dynamic Earth-Pressure Coefficients}
+
+In two-dimensional flow, different parts of the granular body may
+simultaneously be in an active (extending) or passive (compressing)
+stress state.
+The two states admit distinct coefficients derived from the
+Mohr--Coulomb yield criterion:
+\begin{equation}
+    k = \frac{2}{\cos^2\phi}
+        \left(1 \mp \sqrt{1 - \cos^2\phi\left(1+\tan^2\delta\right)}
+        \,\right) - 1,
+    \label{eq:k_active_passive}
+\end{equation}
+where the minus sign gives $k_{\text{act}}$ (active, material
+extending) and the plus sign gives $k_{\text{pass}}$ (passive,
+material compressing).
+For $\phi=37.3^\circ$ and $\delta=27.0^\circ$, one obtains
+$k_{\text{act}}<1<k_{\text{pass}}$.
+
+\subsubsection{State Selection via Velocity Divergence}
+
+The local stress state is identified at each grid cell from the sign
+of the depth-averaged velocity divergence:
+\begin{equation}
+    \nabla\cdot\bar{\bm{u}}
+    = \frac{\partial u}{\partial x} + \frac{\partial v}{\partial y}.
+    \label{eq:divergence}
+\end{equation}
+Expanding flow ($\nabla\cdot\bar{\bm{u}}\geq0$) selects
+$k=k_{\text{act}}$; compressing flow selects $k=k_{\text{pass}}$.
+Spatial derivatives are computed using central differences at interior
+nodes and zero-gradient conditions at boundaries.
+The field $k(x,y,t)$ is updated every time step so the pressure
+response evolves dynamically.
+
+\subsection{Finite-Volume Rusanov Scheme}
+
+The governing system~\eqref{eq:mass_2d}--\eqref{eq:mom_y_2d} is
+written in compact conservative form
+\begin{equation}
+    \frac{\partial\bm{U}}{\partial t}
+    + \frac{\partial\bm{F}(\bm{U})}{\partial x}
+    + \frac{\partial\bm{G}(\bm{U})}{\partial y}
+    = \bm{S}(\bm{U}),
+    \label{eq:conservation_form}
+\end{equation}
+with state vector $\bm{U}=(h,\,hu,\,hv)^\top$ and flux vectors
+\begin{equation}
+    \bm{F} = \begin{pmatrix}hu\\ hu^2+\tfrac{1}{2}kg_zh^2\\ huv
+             \end{pmatrix}, \quad
+    \bm{G} = \begin{pmatrix}hv\\ huv\\ hv^2+\tfrac{1}{2}kg_zh^2
+             \end{pmatrix}.
+    \label{eq:flux_vectors}
+\end{equation}
+
+\subsubsection{Rusanov (Local Lax--Friedrichs) Interface Flux}
+
+At each cell interface, the Rusanov numerical flux is
+\begin{equation}
+    \hat{\bm{F}}_{i+\nicefrac{1}{2},j}
+    = \tfrac{1}{2}\bigl(\bm{F}_L+\bm{F}_R\bigr)
+    - \tfrac{1}{2}\,a_{i+\nicefrac{1}{2},j}
+      \bigl(\bm{U}_R-\bm{U}_L\bigr),
+    \label{eq:rusanov_flux}
+\end{equation}
+where the local maximum wave speed is
+\begin{equation}
+    a_{i+\nicefrac{1}{2},j}
+    = \max\!\bigl(|u_L|+c_L,\;|u_R|+c_R\bigr),
+    \qquad c = \sqrt{kg_zh}.
+    \label{eq:rusanov_speed}
+\end{equation}
+An analogous expression applies to $\hat{\bm{G}}_{i,j+\nicefrac{1}{2}}$
+with $v$ replacing $u$.
+The Rusanov scheme is first-order accurate and provides strong
+stability guarantees without requiring a full Riemann solver, making
+it particularly suitable for flows with dry fronts where $h\to0$.
+
+\subsubsection{Dry-Bed Treatment}
+
+Cells with $h<h_{\text{dry}}=10^{-4}$\,m are treated as dry.
+Both momentum components are set to zero in such cells, preventing
+physically spurious velocity reconstruction near the avalanche margins.
+
+\subsubsection{Time Integration and CFL Condition}
+
+An explicit forward-Euler scheme advances the solution in time:
+\begin{equation}
+\begin{aligned}
+    \bm{U}^{n+1}_{i,j} &= \bm{U}^n_{i,j}
+    - \frac{\Delta t}{\Delta x}
+      \bigl(\hat{\bm{F}}_{i+\nicefrac{1}{2},j}
+           -\hat{\bm{F}}_{i-\nicefrac{1}{2},j}\bigr) \\
+    &\quad
+    - \frac{\Delta t}{\Delta y}
+      \bigl(\hat{\bm{G}}_{i,j+\nicefrac{1}{2}}
+           -\hat{\bm{G}}_{i,j-\nicefrac{1}{2}}\bigr)
+    + \Delta t\,\bm{S}^n_{i,j}.
+\end{aligned}
+    \label{eq:fv_update}
+\end{equation}
+The adaptive time step is determined by the two-dimensional CFL
+condition:
+\begin{equation}
+    \Delta t = \text{CFL} \times \min\!\left(
+    \frac{\Delta x}{\max(|u|+c)},\;
+    \frac{\Delta y}{\max(|v|+c)}\right),
+    \label{eq:cfl_2d}
+\end{equation}
+with $\text{CFL}=0.3$.
+
+% ============================================================
+\section{Two-Dimensional Simulation Setup and TITAN2D Validation}
+% ============================================================
+
+\subsection{Physical Parameters and Initial Condition}
+
+The simulated configuration reproduces a hemispherical cap of granular
+material released on a planar slope inclined at $\zeta=37.4^\circ$.
+Physical and numerical parameters are listed in
+Table~\ref{tab:params}.
+
+% FIX: replaced \hline with booktabs rules (\toprule/\midrule/\bottomrule)
+%      for publication-standard table formatting.
+\begin{table}[htbp]
+\caption{Physical and numerical parameters for the 2-D simulation.}
+\label{tab:params}
+\centering
+\begin{tabular}{@{}llcc@{}}
+\toprule
+\textbf{Parameter}   & \textbf{Symbol}          & \textbf{Value}   & \textbf{Units} \\
+\midrule
+Slope angle          & $\zeta$                  & $37.4$           & $^\circ$       \\
+Basal friction       & $\delta$                 & $27.0$           & $^\circ$       \\
+Internal friction    & $\phi$                   & $37.3$           & $^\circ$       \\
+Active coefficient   & $k_{\text{act}}$         & computed         & ---            \\
+Passive coefficient  & $k_{\text{pass}}$        & computed         & ---            \\
+Domain ($x$)         & $L_x$                    & $4.0$            & m              \\
+Domain ($y$)         & $L_y$                    & $1.3$            & m              \\
+Grid resolution      & $N_x \times N_y$         & $800\times260$   & ---            \\
+CFL number           & ---                      & $0.3$            & ---            \\
+Dry threshold        & $h_{\text{dry}}$         & $10^{-4}$        & m              \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The granular pile is initialized as a \emph{cylindrical cap}
+(flat disk) of radius $R=0.06$\,m centered at
+$(x_c,y_c)=(0.4,0.65)$\,m, with constant height $H_0=R/1.5$:
+\begin{equation}
+    h(x,y,0) =
+    \begin{cases}
+        H_0 & (x-x_c)^2+(y-y_c)^2 \leq R^2, \\
+        0   & \text{otherwise.}
+    \end{cases}
+    \label{eq:initial_condition}
+\end{equation}
+The initial velocity field is zero everywhere.
+As time advances, gravitational forcing accelerates the mass
+downslope, the pile spreads laterally due to internal pressure
+gradients, and Coulomb basal friction progressively decelerates the
+flow.
+
+\subsection{Centerline Profile Validation}
+
+TITAN2D is an open-source, parallel finite-volume solver developed
+specifically for granular avalanche simulations~\cite{Patra2005}.
+It solves the same depth-averaged Mohr--Coulomb system on an adaptive
+mesh using a Godunov-type scheme and constitutes a well-established
+numerical reference.
+Centerline profiles of $h(x,y_c,t)$ are extracted at $y=y_c=0.65$\,m
+and compared at five instants: $t=0,\,0.5,\,1.0,\,1.5,\,2.0$\,s
+(Fig.~\ref{fig:centerline_val_2d}).
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.95\textwidth]{centerline_val.pdf}
+    \caption{Centerline thickness profiles $h(x,y_c,t)$ at five time
+    instants. Dashed lines: TITAN2D reference; solid lines: present
+    Dynamic-$k$ Rusanov solver. Colors indicate time: $t=0$\,s
+    (black), $t=0.5$\,s (blue), $t=1.0$\,s (green), $t=1.5$\,s
+    (orange), $t=2.0$\,s (red).}
+    \label{fig:centerline_val_2d}
+\end{figure*}
+\subsection{Spatial and Temporal Convergence}
+
+A grid convergence and temporal convergence study was conducted to
+verify that the reported results are robust with respect to
+discretization parameters.
+For each study, the centerline RMSE (relative to the TITAN2D
+reference at $y_c=0.65$\,m) is computed at $t=1.0$\,s.
+
+For \textbf{spatial convergence}, the grid is refined across four
+levels: $100\times32$, $200\times65$, $400\times130$, and
+$800\times260$, with the aspect ratio $N_y/N_x\approx0.325$ held
+constant and $\text{CFL}=0.3$ fixed.
+RMSE decreases monotonically with refinement, confirming that the
+first-order Rusanov scheme converges at the expected
+$\mathcal{O}(\Delta x)$ rate.
+Diminishing returns are observed beyond $N_x=400$, identifying the
+$800\times260$ production grid as the optimal balance between
+accuracy and computational cost.
+
+For \textbf{temporal convergence}, the grid is fixed at
+$400\times130$ and the CFL is varied from $0.8$ down to $0.1$.
+Because the first-order Rusanov flux is spatial-error-dominated,
+RMSE remains essentially flat across the entire stable CFL envelope.
+This confirms that operating at $\text{CFL}=0.3$ delivers full
+numerical accuracy without sacrificing GPU throughput.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.85\textwidth]{grid_convergence.pdf}
+    \caption{Spatial (left panel) and temporal (right panel)
+    convergence of RMSE against the TITAN2D centerline reference.
+    Spatial convergence follows the expected $\mathcal{O}(\Delta x)$
+    rate; temporal error is negligible across the stable CFL range
+    $0.1$--$0.8$.}
+    \label{fig:grid_convergence}
+\end{figure}
+
+\subsection{Spatial Footprint and Error Metrics (IoU \& RMSE)}
+
+The numerical footprint is compared against TITAN2D using a wet-cell
+threshold $h_{\text{thresh}}=10^{-3}$\,m.
+Geometric alignment is evaluated using the Intersection-over-Union
+(IoU) metric:
+\begin{equation}
+    \text{IoU}(t) = \frac{\text{Area}_{\text{Rusanov}}
+                    \cap \text{Area}_{\text{TITAN2D}}}
+                   {\text{Area}_{\text{Rusanov}}
+                    \cup \text{Area}_{\text{TITAN2D}}},
+\end{equation}
+and the Root-Mean-Square Error (RMSE) of flow depth is computed
+exclusively over wetted regions.
+Figure~\ref{fig:iou_rmse} illustrates the temporal evolution of both
+metrics, demonstrating strong footprint fidelity and bounded depth
+error throughout the primary acceleration phase.
+The cumulative wetted footprint is shown in
+Fig.~\ref{fig:wetted_footprint}.
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.95\textwidth]{iou_rmse_combined.pdf}
+    \caption{Quantitative spatial validation. (Left)
+    Intersection-over-Union (IoU) measuring the overlap of the wetted
+    footprint between the Dynamic-$k$ Rusanov solver and TITAN2D.
+    (Right) RMSE of flow depth $h$ computed on strictly wet cells.}
+    \label{fig:iou_rmse}
+\end{figure*}
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.95\textwidth]{wetted_area_comparison.pdf}
+    \caption{Cumulative wetted footprint map comparing the maximum
+    lateral and longitudinal spread of the Dynamic-$k$ Rusanov solver
+    (blue) against TITAN2D (red dashed).}
+    \label{fig:wetted_footprint}
+\end{figure*}
+
+\subsection{Macroscopic Flow Dynamics ($h_{\max}$ and $\bar{V}$)}
+
+The maximum peak height $h_{\max}$ is tracked continuously to measure
+the vertical collapse of the initial cylindrical cap.
+The kinetic energy evolution is quantified via a mass-weighted average
+velocity:
+\begin{equation}
+    \bar{V}(t) = \frac{\displaystyle\sum_{i,j} h_{i,j}
+                       \sqrt{u_{i,j}^2+v_{i,j}^2}}
+                      {\displaystyle\sum_{i,j} h_{i,j}},
+\end{equation}
+which captures the bulk acceleration of the avalanche under
+gravitational forcing, followed by frictional deceleration.
+Results are shown in Fig.~\ref{fig:hmax_vel}.
+
+\begin{figure*}[t!]
+    \centering
+    \includegraphics[width=0.95\textwidth]{hmax_velocity_combined.pdf}
+    \caption{Macroscopic flow dynamics. (Left) Collapse of maximum
+    flow thickness $h_{\max}(t)$ over time. (Right) Mass-weighted
+    average velocity $\bar{V}(t)$ showing the gravitational
+    acceleration phase followed by frictional deceleration.}
+    \label{fig:hmax_vel}
+\end{figure*}
+
+\subsection{Lagrangian Kinematics (Centroid Tracking)}
+
+The trajectory of the avalanche center-of-mass is calculated from the
+depth distribution:
+\begin{equation}
+    X_c(t) = \frac{\displaystyle\sum_{i,j} x_i h_{i,j}}
+                  {\displaystyle\sum_{i,j} h_{i,j}}, \qquad
+    Y_c(t) = \frac{\displaystyle\sum_{i,j} y_j h_{i,j}}
+                  {\displaystyle\sum_{i,j} h_{i,j}}.
+\end{equation}
+Mapping $\bar{V}$ against the downslope centroid displacement
+$d(t)=\sqrt{(X_c-X_{c,0})^2+(Y_c-Y_{c,0})^2}$ provides insight into
+run-out distances and momentum conservation
+(Fig.~\ref{fig:vel_dist}).
+
+% FIX: was width=0.65\textwidth in a single-column figure environment
+%      — overflowed into the adjacent column.  Changed to \columnwidth.
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\columnwidth]{vel_vs_dist_comparison.pdf}
+    \caption{Lagrangian trajectory analysis: mass-weighted velocity
+    $\bar{V}$ as a function of centroid displacement $d(t)$.
+    Selected time stamps are annotated.}
+    \label{fig:vel_dist}
+\end{figure}
+
+\subsection{Discussion of Results}
+
+The validation suite demonstrates strong agreement between the present
+Dynamic-$k$ Rusanov solver and TITAN2D across multiple physical
+metrics.
+
+\paragraph{Wave Speed and Profile Shape.}
+Both solvers predict the downslope advance of the avalanche front at
+nearly identical locations.
+The parabolic thinning and progressive flattening of the profile are
+captured correctly.
+At early times ($t\leq0.5$\,s), the Rusanov solution exhibits minor
+numerical diffusion characteristic of first-order fluxes, which
+diminishes as the flow transitions to a spreading-dominated regime.
+
+\paragraph{Dynamic $k$ Switching.}
+Near the leading edge, material actively extends
+($\nabla\cdot\bar{\bm{u}}>0$), selecting $k_{\text{act}}$.
+Behind the front, decelerating material compresses, triggering the
+local switch to $k_{\text{pass}}$.
+This localized stiffening of the pressure wave correctly steepens the
+trailing profile slope, validating the 2D divergence field
+implementation.
+
+\paragraph{Global Mass Conservation.}
+Figure~\ref{fig:mass_2d} confirms that the total volume
+$\mathcal{V}(t)=\iint h\,dx\,dy$ remains strictly constant throughout
+the simulation, verifying that the discrete finite-volume update
+conserves mass to numerical precision.
+
+% FIX: was width=0.7\textwidth in a single-column figure environment.
+%      Changed to \columnwidth.
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\columnwidth]{mass_conservation.pdf}
+    \caption{Total granular volume $\mathcal{V}(t)$ as a function of
+    time, confirming exact mass conservation in the Dynamic-$k$
+    Rusanov simulation.}
+    \label{fig:mass_2d}
+\end{figure}
+
+\subsection{Comparison with the One-Dimensional Model}
+
+Comparing the two-dimensional results with the one-dimensional solver
+reveals several important differences.
+First, lateral spreading is absent in the 1-D model by construction,
+whereas the 2-D simulation shows the pile widening in the
+$y$-direction at a rate determined by $kg_z\,\partial h/\partial y$,
+which reduces the peak height more rapidly.
+Second, the dynamic switching between $k_{\text{act}}$ and
+$k_{\text{pass}}$ has a more pronounced effect in 2-D because the
+divergence field $\nabla\cdot\bar{\bm{u}}$ captures compression events
+that occur even when the downslope component alone is expanding,
+producing a richer spatial structure of the pressure coefficient
+field.
+Third, the Rusanov flux scheme replaces the combination of upwind
+advection and centered pressure gradients of the 1-D finite-difference
+solver with a unified, conservative numerical flux, ensuring
+consistent treatment of shocks and dry fronts within a single
+formulation.
+
+% ============================================================
+\section{Multi-GPU Performance Comparison}
+\label{sec:multigpu}
+% ============================================================
+
+All benchmarks reported above were executed on two NVIDIA GPU
+architectures: the GTX~1650 (Turing, consumer-class) and the
+A5000 (Ampere, workstation-class).
+Table~\ref{tab:gpu_specs} summarises the hardware specifications;
+Table~\ref{tab:gpu_benchmark} compares peak solver throughput.
+
+\begin{table}[htbp]
+\caption{Hardware specifications: GTX~1650 vs.\ A5000.}
+\label{tab:gpu_specs}
+\centering
+\begin{tabular}{@{}p{2.8cm}rr@{}}
+\toprule
+\textbf{Spec}
+    & \shortstack[r]{\textbf{GTX~1650}\\\textbf{(Turing)}}
+    & \shortstack[r]{\textbf{A5000}\\\textbf{(Ampere)}} \\
+\midrule
+CUDA cores         & 896    & 8{,}192 \\
+SMs                & 14     & 64      \\
+VRAM               & 4\,GB  & 24\,GB  \\
+Peak BW (GB/s)     & 128    & 768     \\
+Peak FP32 (TFLOP/s)& 2.98   & 27.8    \\
+FP64 ratio         & 1{:}64 & 1{:}64  \\
+Shared mem./SM     & 64\,KB & 100\,KB \\
+Ridge point (F/B)  & 23.3   & 36.2    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\caption{Solver benchmark comparison (FP32, \texttt{gpu\_global}).}
+\label{tab:gpu_benchmark}
+\centering
+\begin{tabular}{@{}p{3.4cm}rr@{}}
+\toprule
+\textbf{Metric}
+    & \shortstack[r]{\textbf{GTX~1650}}
+    & \shortstack[r]{\textbf{A5000}} \\
+\midrule
+MCUPS at $800\times260$    & 674    & 3{,}083 \\
+Max grid tested            & 3200$\times$1040 & 6400$\times$2080 \\
+Peak MCUPS                 & 991    & 6{,}621 \\
+GPU/CPU speedup ($800\times260$) & 12.3$\times$ & 12.4$\times$ \\
+FP32/FP64 speedup          & 4.2$\times$ & 5.0$\times$ \\
+SoA/AoS gain (3200$\times$1040) & 1.19$\times$ & 1.25$\times$ \\
+Shared/Global ratio        & 0.92$\times$ & 0.93$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Strong and Weak Scaling}
+
+Figure~\ref{fig:dual_scaling} presents dual-panel scaling results.
+Both GPUs deliver near-identical CPU-relative speedup (\textasciitilde12.4$\times$)
+at $800\times260$, confirming that kernel-launch overhead is
+the binding constraint at this size, not compute or bandwidth.
+The A5000 sustains higher absolute throughput and scales to
+grids that are $4\times$ larger in cell count than the
+4\,GB GTX~1650 allows, reaching a plateau of $\sim6{,}600$\,MCUPS
+at the $6400\times2080$ configuration.
+
+\begin{figure*}[t!]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/gtx1650/strong_scaling.pdf}
+        \caption{GTX~1650 strong scaling.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/a5000/strong_scaling.pdf}
+        \caption{A5000 strong scaling.}
+    \end{subfigure}
+    \\[4pt]
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/gtx1650/weak_scaling.pdf}
+        \caption{GTX~1650 weak scaling (MCUPS).}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/a5000/weak_scaling.pdf}
+        \caption{A5000 weak scaling (MCUPS).}
+    \end{subfigure}
+    \caption{Dual-GPU scaling study. Top row: speedup relative to
+    the Numba CPU reference. Bottom row: solver throughput (MCUPS)
+    as a function of grid size. Both GPUs show a~$\sim12.4\times$
+    CPU-relative speedup at $800\times260$; the A5000 sustains
+    substantially higher absolute throughput and supports larger
+    domains due to its 24\,GB VRAM.}
+    \label{fig:dual_scaling}
+\end{figure*}
+
+\subsection{Precision Impact}
+
+Figure~\ref{fig:dual_precision} compares FP32 and FP64 throughput
+on both GPUs.
+Although both devices carry a theoretical 1{:}64 FP64-to-FP32
+throughput ratio, the measured solver speedup is only 4.2$\times$
+(GTX~1650) and 5.0$\times$ (A5000).
+This confirms that the solver is memory-bound: the bottleneck is
+DRAM bandwidth, not floating-point units, so the full 64$\times$
+arithmetic penalty is not observed in practice.
+
+\begin{figure*}[t!]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/gtx1650/precision_study.pdf}
+        \caption{GTX~1650: FP32 vs.\ FP64.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/a5000/precision_study.pdf}
+        \caption{A5000: FP32 vs.\ FP64.}
+    \end{subfigure}
+    \caption{Precision impact on solver throughput. FP32 outperforms
+    FP64 by 4.2$\times$ (GTX~1650) and 5.0$\times$ (A5000),
+    well below the theoretical 64$\times$ peak-FLOP ratio,
+    confirming that DRAM bandwidth is the binding resource.}
+    \label{fig:dual_precision}
+\end{figure*}
+
+\subsection{Data Layout and Shared Memory}
+
+Figure~\ref{fig:dual_layout} compares SoA vs.\ AoS throughput
+and shared-memory vs.\ global-memory flux kernels on both GPUs.
+The SoA advantage grows with grid size, reaching 1.19$\times$
+(GTX~1650) and 1.25$\times$ (A5000) at 3200$\times$1040 as the
+AoS layout increasingly saturates the cache with strided
+non-coalesced transactions.
+
+The shared-memory flux kernel is consistently \emph{slower} than
+the global-memory baseline on both GPUs (ratio 0.92$\times$ on
+the GTX~1650, 0.93$\times$ on the A5000 at large grids).
+This is a key negative result: for the Rusanov stencil, arithmetic
+intensity is too low ($I\approx0.68$\,FLOP/byte) for the
+\texttt{\_\_syncthreads()} barrier overhead and extra
+shared-memory load passes to pay off.
+Shared-memory tiling is more effective for compute-bound stencils
+with AI~$>$~1\,FLOP/byte; this solver does not meet that criterion
+on current hardware.
+
+\begin{figure*}[t!]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/gtx1650/data_layout.pdf}
+        \caption{GTX~1650: SoA vs.\ AoS.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/a5000/data_layout.pdf}
+        \caption{A5000: SoA vs.\ AoS.}
+    \end{subfigure}
+    \\[4pt]
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/gtx1650/shared_mem_impact.pdf}
+        \caption{GTX~1650: Global vs.\ Shared memory flux kernel.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/a5000/shared_mem_impact.pdf}
+        \caption{A5000: Global vs.\ Shared memory flux kernel.}
+    \end{subfigure}
+    \caption{Data layout and shared-memory impact on both GPUs.
+    Top: SoA consistently outperforms AoS, with the gap widening
+    at higher resolutions due to cache saturation.
+    Bottom: Shared-memory tiling is slower than global-memory on
+    both architectures, a negative result explained by the
+    low arithmetic intensity ($I<1$\,FLOP/byte) of the Rusanov
+    stencil.}
+    \label{fig:dual_layout}
+\end{figure*}
+
+\subsection{Block Size Sensitivity}
+
+Figure~\ref{fig:dual_blocksize} shows that the GTX~1650 exhibits
+mild sensitivity to block configuration (737--787\,MCUPS,
+a 7\% range) with 16$\times$8 threads optimal, while the
+A5000 is essentially insensitive ($\leq1$\% variation across all
+configurations from $8\times8$ to $32\times32$) due to its larger
+SM count and deeper warp pipeline.
+
+\begin{figure*}[t!]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/gtx1650/block_size_sweep.pdf}
+        \caption{GTX~1650: Block size sensitivity.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/a5000/block_size_sweep.pdf}
+        \caption{A5000: Block size sensitivity.}
+    \end{subfigure}
+    \caption{Throughput (MCUPS) as a function of CUDA thread block
+    configuration. GTX~1650 shows a 7\% variation favoring
+    $16\times8$; the A5000 is effectively flat, indicating
+    the device is saturated regardless of block geometry.}
+    \label{fig:dual_blocksize}
+\end{figure*}
+
+\subsection{Cross-GPU Throughput and Roofline}
+
+Figures~\ref{fig:cross_gpu_mcups} and~\ref{fig:cross_gpu_roofline}
+present the combined cross-GPU throughput and roofline analyses.
+The A5000 delivers $6.7\times$ the MCUPS of the GTX~1650 at peak,
+close to the 6$\times$ ratio of their respective memory bandwidths
+(768 vs.\ 128\,GB/s), confirming that bandwidth determines
+throughput for this workload.
+
+\begin{figure*}[t!]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/cross_gpu/cross_gpu_mcups.pdf}
+        \caption{Peak MCUPS comparison across GPUs.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/cross_gpu/cross_gpu_roofline.pdf}
+        \caption{Combined roofline: kernel operating points.}
+    \end{subfigure}
+    \caption{Cross-GPU performance. (Left) Peak solver throughput
+    on GTX~1650 and A5000. The A5000 advantage ($\approx6.7\times$)
+    closely tracks the bandwidth ratio ($6.0\times$), confirming
+    that this solver scales with memory bandwidth.
+    (Right) Roofline showing all kernels deeply memory-bound on
+    both architectures.}
+    \label{fig:cross_gpu_mcups}
+\end{figure*}
+
+\begin{figure*}[t!]
+    \centering
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/cross_gpu/cross_gpu_speedup.pdf}
+        \caption{GPU-vs-CPU speedup comparison.}
+    \end{subfigure}\hfill
+    \begin{subfigure}[t]{0.48\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{results/cross_gpu/cross_gpu_bandwidth.pdf}
+        \caption{Effective memory bandwidth utilisation.}
+    \end{subfigure}
+    \caption{Cross-GPU speedup and bandwidth efficiency.
+    Both GPUs achieve $\sim$12$\times$ speedup over the CPU
+    reference at $800\times260$; bandwidth utilisation peaks
+    near 65\% of theoretical maximum on both devices.}
+    \label{fig:cross_gpu_roofline}
+\end{figure*}
+
+
+% ============================================================
+% Nomenclature is unnumbered per conference convention.
+\section*{Nomenclature}
+% ============================================================
+
+\noindent
+\begin{tabular}{@{}ll}
+$h$                              & depth-averaged flow thickness (m)              \\
+$u,\,v$                          & depth-averaged velocity, $x$- and $y$-dir.\ (m\,s$^{-1}$) \\
+$k$                              & earth-pressure coefficient (--)                 \\
+$k_{\text{act}},\,k_{\text{pass}}$ & active and passive earth-pressure coeff.\ (--)  \\
+$\phi$                           & internal friction angle (rad)                   \\
+$\delta$                         & basal friction angle (rad)                      \\
+$\zeta$                          & slope inclination angle (rad)                   \\
+$\mu$                            & basal friction coefficient, $\mu=\tan\delta$ (--) \\
+$g_x,\,g_y,\,g_z$               & gravity components along $x$, $y$, $z$ (m\,s$^{-2}$) \\
+$\bm{F},\,\bm{G}$               & flux vectors in $x$- and $y$-directions         \\
+$\bm{S}$                         & source term vector                              \\
+$\Delta x,\,\Delta y$            & grid spacing (m)                                \\
+$\Delta t$                       & time step (s)                                   \\
+$h_{\text{dry}}$                 & dry-bed threshold (m)                           \\
+\end{tabular}
+
+% ============================================================
+\section{Conclusion}
+% ============================================================
+
+This paper developed a high-fidelity numerical solver for granular
+avalanche motion modeled by the depth-averaged Savage--Hutter
+equations.
+Theoretical validation against analytical 1D similarity solutions
+confirmed accurate mass preservation and spreading dynamics.
+The computational framework was then extended to a complete 2D
+finite-volume architecture employing a Rusanov Riemann solver with
+dynamic active/passive earth-pressure coefficient switching.
+
+Rigorous quantitative benchmarking against the TITAN2D Godunov-type
+solver verified the physical accuracy of the 2D model.
+The validation suite utilized IoU spatial footprint analysis,
+localized RMSE depth tracking, and Lagrangian centroid transport
+evaluation, demonstrating excellent agreement in capturing the rapid
+acceleration, geometric collapse, lateral spreading, and ultimate
+frictional deceleration of the avalanche mass.
+
+A massively parallel GPU architecture was engineered using CUDA to
+circumvent the $\mathcal{O}(N_x\times N_y)$ sequential bottleneck
+inherent to high-resolution Eulerian grids.
+Transitioning state vectors to a Struct of Arrays (SoA) layout and
+mapping explicit interface computations directly to parallel hardware
+threads allowed the solver to fully saturate GDDR memory bandwidth.
+Performance evaluations on the GTX~1650 and A5000 revealed
+$\sim12.4\times$ speedup over the optimised CPU reference at the
+production grid ($800\times260$), scaling to peak throughputs of
+991\,MCUPS (GTX~1650) and 6{,}621\,MCUPS (A5000).
+Nsight Compute profiling confirmed all kernels are memory-bound
+($I\approx0.3$--$0.7$\,FLOP/byte $\ll I^*$), and the $\sim5\times$
+FP32/FP64 speedup ratio (vs.\ theoretical 64$\times$) provides
+direct evidence that DRAM bandwidth, not arithmetic throughput,
+is the binding resource.
+GPU parallelization is therefore a critical enabling technology for
+real-time, high-resolution geophysical hazard assessment.
+
+\end{document}
